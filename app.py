@@ -1,6 +1,7 @@
 ﻿from flask import Flask, request, jsonify
 import docker
 import os
+import uuid
 
 app = Flask(__name__)
 
@@ -16,9 +17,10 @@ def run():
     data = request.get_json(force=True) or {}
     image = data.get("image", "alpine:3.20")
     cmd = data.get("cmd", "echo hello")
+    timeout = int(data.get("timeout", 120))
 
     client = get_client()
-    c = None
+    name = f"job-{uuid.uuid4().hex[:12]}"
 
     try:
         try:
@@ -26,42 +28,40 @@ def run():
         except Exception:
             pass
 
-        # NO remove=True aquí (para poder leer logs seguro)
-        c = client.containers.run(
+        # Ejecuta en foreground y captura salida directamente (evita logs 409)
+        output = client.containers.run(
             image=image,
             command=["sh", "-lc", cmd],
-            detach=True,
+            name=name,
+            remove=False,      # lo borramos nosotros después
+            detach=False,      # output directo
+            stdout=True,
+            stderr=True,
         )
 
-        result = c.wait(timeout=120)
-        rc = int(result.get("StatusCode", 1))
+        # output es bytes
+        stdout = output.decode("utf-8", errors="replace")
 
-        out = ""
-        err = ""
-        try:
-            out = c.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
-        except Exception:
-            pass
-        try:
-            err = c.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
-        except Exception:
-            pass
+        # obtener exit code del contenedor
+        c = client.containers.get(name)
+        rc = int(c.wait(timeout=timeout).get("StatusCode", 1))
 
         return jsonify({
             "returncode": rc,
-            "stdout": out,
-            "stderr": err
+            "stdout": stdout,
+            "stderr": ""
         }), 200 if rc == 0 else 500
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
     finally:
-        if c is not None:
-            try:
-                c.remove(force=True)
-            except Exception:
-                pass
+        # cleanup best-effort
+        try:
+            c = client.containers.get(name)
+            c.remove(force=True)
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8081")))
