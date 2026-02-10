@@ -1,8 +1,11 @@
 ﻿from flask import Flask, request, jsonify
-import subprocess
+import docker
 import os
 
 app = Flask(__name__)
+
+def get_client():
+    return docker.DockerClient(base_url="unix://var/run/docker.sock")
 
 @app.get("/health")
 def health():
@@ -14,16 +17,33 @@ def run():
     image = data.get("image", "alpine:3.20")
     cmd = data.get("cmd", "echo hello")
 
-    p = subprocess.run(
-        ["docker", "run", "--rm", image, "sh", "-lc", cmd],
-        capture_output=True, text=True
-    )
+    try:
+        client = get_client()
 
-    return jsonify({
-        "returncode": p.returncode,
-        "stdout": p.stdout,
-        "stderr": p.stderr
-    }), 200 if p.returncode == 0 else 500
+        try:
+            client.images.pull(image)
+        except Exception:
+            pass
+
+        c = client.containers.run(
+            image=image,
+            command=["sh", "-lc", cmd],
+            remove=True,
+            detach=True,
+        )
+
+        result = c.wait(timeout=120)
+        logs = c.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
+
+        rc = int(result.get("StatusCode", 1))
+        return jsonify({
+            "returncode": rc,
+            "stdout": logs,
+            "stderr": ""
+        }), 200 if rc == 0 else 500
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8081")))
