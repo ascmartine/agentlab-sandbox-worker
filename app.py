@@ -17,33 +17,51 @@ def run():
     image = data.get("image", "alpine:3.20")
     cmd = data.get("cmd", "echo hello")
 
-    try:
-        client = get_client()
+    client = get_client()
+    c = None
 
+    try:
         try:
             client.images.pull(image)
         except Exception:
             pass
 
+        # NO remove=True aquí (para poder leer logs seguro)
         c = client.containers.run(
             image=image,
             command=["sh", "-lc", cmd],
-            remove=True,
             detach=True,
         )
 
         result = c.wait(timeout=120)
-        logs = c.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
-
         rc = int(result.get("StatusCode", 1))
+
+        out = ""
+        err = ""
+        try:
+            out = c.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        try:
+            err = c.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+        except Exception:
+            pass
+
         return jsonify({
             "returncode": rc,
-            "stdout": logs,
-            "stderr": ""
+            "stdout": out,
+            "stderr": err
         }), 200 if rc == 0 else 500
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+    finally:
+        if c is not None:
+            try:
+                c.remove(force=True)
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8081")))
